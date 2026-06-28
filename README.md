@@ -80,6 +80,7 @@ A zero-length Opus frame (`0x00 0x00`) signals end of speech.
 | Core 1 | `micTask` | I2S read, mu-law encode, UDP send |
 | Core 1 | `opusDecodeTask` | TCP read, Opus decode, I2S write (created per playback) |
 | Core 1 | `updateLedTask` | 40Hz LED refresh with gamma-corrected fade |
+| Core 1 | `wakeWordTask` | *(optional)* Continuous "OK Nabu" wake word detection (see below) |
 
 ### Conversation backends
 
@@ -113,6 +114,77 @@ Agentic requests can take 5-60+ seconds while the gateway runs tools, so the pip
 **Contextual stall phrases.** Before the main agent call, the pipeline fires a fast classifier that decides whether the question needs a brief spoken acknowledgment. Conversational questions return `NONE` and get no stall. Tool-needing questions get a short personality-matched phrase that plays within about a second while the agent works. The stall text is then injected back into the agent's user message as a parenthetical continuity note so it doesn't repeat itself. Configure in `conversation.stall`.
 
 **The first-turn caveat with OpenClaw.** OpenClaw's OpenAI-compatible endpoint buffers all content from the first agent turn until the first round of tool execution completes. If the model generates an opening sentence and then calls a tool, that sentence is held server-side until the tool finishes. Narration between *subsequent* tool rounds streams fine. This is why the stall classifier exists: it gives the user a fast spoken acknowledgment that bypasses the gateway's first-turn buffering. See `pipeline/conversation/stall.py`.
+
+### microWakeWord — "OK Nabu" detection (optional, onjuino only)
+
+The firmware includes an **optional** continuous wake word engine that listens for "OK Nabu" when the device is idle. When detected, it activates the microphone exactly like a center tap — no need to touch the device.
+
+> **This is disabled by default.** To enable it, you must install the TensorFlowLite_ESP32 library and flash with the 16MB partition scheme. The feature adds ~115KB to the firmware binary.
+
+#### How it works
+
+- A `wakeWordTask` runs on Core 1 at low priority, reading the I2S microphone only when `micTask` is inactive (no playback, mic timeout expired)
+- Audio is processed through the same spectrogram frontend used by ESPHome's microWakeWord (windowing → FFT → filterbank → noise reduction → PCAN → log scale)
+- Features are fed into a quantized TFLite model (~115KB) that outputs a probability every 30ms
+- A sliding window of 10 probabilities is averaged; if above 50% → "OK Nabu" detected
+- On detection: white LED flash, mic activates for 20 seconds (same as tap-to-talk)
+
+#### LED feedback
+
+| State | LED behavior |
+|---|---|
+| Listening for wake word | Subtle green pulse every ~2 seconds |
+| Wake word detected | White flash, then mic active (white) |
+| Muted | Wake word disabled, red fade |
+
+#### Guard conditions
+
+The wake word task automatically pauses when:
+- 🔇 Mute switch is active (GPIO38)
+- 🔕 Device is disabled (double-tap)
+- 🔊 Audio is playing (I2S TX in use)
+- 🎤 Microphone is already active (user is speaking)
+
+#### Enabling microWakeWord
+
+1. **Install the TensorFlowLite_ESP32 library:**
+   ```bash
+   arduino-cli lib install "TensorFlowLite_ESP32"
+   ```
+
+2. **Flash with the 16MB partition scheme** (already configured in `flash.sh`):
+   ```bash
+   ./flash.sh
+   ```
+   The FQBN now includes `FlashSize=16M,PartitionScheme=default_8MB` to accommodate the model.
+
+3. **Verify** in the serial monitor (115200 baud):
+   ```
+   [WW] Wake word task started on Core 1
+   [WW] Wake word engine initialized successfully
+   [WW] Entering listening loop...
+   ```
+
+4. **Test:** say "OK Nabu" — the LEDs should flash white and the mic opens for 20 seconds.
+
+#### Disabling microWakeWord
+
+To compile **without** the wake word engine (saving ~115KB flash and ~60KB PSRAM):
+
+1. Comment out or remove `#include "wake_word.h"` in `onjuino/onjuino.ino`
+2. Remove the `xTaskCreatePinnedToCore(wakeWordTask, ...)` line in `setup()`
+3. Remove the `wakeWordEnabled = ...` lines in the mute handler in `loop()`
+4. Flash with the original 4MB partition: change FQBN in `flash.sh` back to `FlashSize=4M,PartitionScheme=default`
+
+#### Files involved
+
+| File | Purpose |
+|---|---|
+| `onjuino/wake_word.h` | Wake word engine: TFLite init, frontend, inference, FreeRTOS task |
+| `onjuino/okay_nabu_model.h` | Pre-trained model as a C array (auto-generated from `okay_nabu.tflite`) |
+| `onjuino/okay_nabu.tflite` | Source model from [ESPHome micro-wake-word-models](https://github.com/esphome/micro-wake-word-models) |
+| `onjuino/microfrontend/*.h` | Audio preprocessing headers (vendored from [esp-micro-speech-features](https://github.com/esphome-libs/esp-micro-speech-features)) |
+| `onjuino/*.c` | Audio preprocessing source files (FFT, filterbank, noise reduction, etc.) |
 
 ## Installation
 
