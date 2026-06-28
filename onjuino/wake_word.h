@@ -74,8 +74,11 @@ extern volatile bool isPlaying;
 extern volatile bool deviceEnabled;
 extern const unsigned long MIC_LISTEN_MS;
 
-// Mute pin (GPIO38, INPUT_PULLUP — LOW = unmuted, HIGH = muted)
-#define MUTE_PIN 38
+// Mute pin — use the MUTE macro from custom_boards.h (GPIO38 on V3, INPUT_PULLUP)
+// LOW = unmuted, HIGH = muted
+#ifndef MUTE
+#define MUTE 38
+#endif
 
 // ============================================================
 // Wake word state
@@ -339,10 +342,12 @@ static bool wakeWordProcessChunk(const int16_t *samples, size_t sample_count) {
         }
 
         // Cooldown tracking: if current probability is below cutoff, advance cooldown
+        // (only relevant during the initial MIN_SLICES_BEFORE_DETECTION warm-up period)
         uint8_t quantized_cutoff = (uint8_t)(WW_PROBABILITY_CUTOFF * 255.0f);
         if (ww_recent_probs[ww_prob_index] < quantized_cutoff) {
-            ww_ignore_windows = (ww_ignore_windows < 0) ? ww_ignore_windows + 1 : 1;
-            if (ww_ignore_windows > 0) ww_ignore_windows = 0;
+            if (ww_ignore_windows < 0) {
+                ww_ignore_windows++;
+            }
         }
     }
 
@@ -417,7 +422,7 @@ void wakeWordTask(void *pvParameters) {
             should_listen = false;  // audio playback active — I2S TX in use
         } else if (mic_timeout > millis()) {
             should_listen = false;  // micTask is active (user is speaking)
-        } else if (digitalRead(MUTE_PIN) == HIGH) {
+        } else if (digitalRead(MUTE) == HIGH) {
             should_listen = false;  // hardware mute switch active
         }
 
