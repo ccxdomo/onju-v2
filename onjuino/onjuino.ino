@@ -411,12 +411,21 @@ void loop()
             Serial.println("[UART] Turned off mic");
             break;
         case 'W':
-            Serial.println("[UART] LED pulse test (fast ramp white)");
-            setLed(255, 255, 255, 255, 20);
+            wakeWordEnabled = !wakeWordEnabled;
+            Serial.printf("[UART] Wake word %s\n", wakeWordEnabled ? "ENABLED" : "DISABLED");
+            if (wakeWordEnabled) {
+                setLed(0, 255, 50, 255, 10);  // green pulse = listening
+            } else {
+                setLed(255, 50, 0, 255, 2);   // red fade = disabled
+            }
             break;
         case 'w':
             Serial.println("[UART] LED pulse test (slow ramp white)");
             setLed(255, 255, 255, 255, 1);
+            break;
+        case 'T':
+            Serial.println("[UART] LED pulse test (fast ramp white)");
+            setLed(255, 255, 255, 255, 20);
             break;
         case 'L':
             Serial.println("[UART] LED's all on max brightness (white)");

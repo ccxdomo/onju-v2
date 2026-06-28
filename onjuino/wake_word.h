@@ -83,7 +83,7 @@ extern const unsigned long MIC_LISTEN_MS;
 // ============================================================
 // Wake word state
 // ============================================================
-volatile bool wakeWordEnabled = true;
+volatile bool wakeWordEnabled = false;  // disabled by default — enable via serial command or code
 volatile bool wakeWordDetected = false;
 
 // ============================================================

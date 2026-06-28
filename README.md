@@ -115,11 +115,11 @@ Agentic requests can take 5-60+ seconds while the gateway runs tools, so the pip
 
 **The first-turn caveat with OpenClaw.** OpenClaw's OpenAI-compatible endpoint buffers all content from the first agent turn until the first round of tool execution completes. If the model generates an opening sentence and then calls a tool, that sentence is held server-side until the tool finishes. Narration between *subsequent* tool rounds streams fine. This is why the stall classifier exists: it gives the user a fast spoken acknowledgment that bypasses the gateway's first-turn buffering. See `pipeline/conversation/stall.py`.
 
-### microWakeWord — "OK Nabu" detection (optional, onjuino only)
+### microWakeWord — "OK Nabu" detection (onjuino only)
 
-The firmware includes an **optional** continuous wake word engine that listens for "OK Nabu" when the device is idle. When detected, it activates the microphone exactly like a center tap — no need to touch the device.
+The firmware includes a built-in wake word engine that listens for "OK Nabu" when the device is idle. When detected, it activates the microphone exactly like a center tap — no need to touch the device.
 
-> **This is disabled by default.** To enable it, you must install the TensorFlowLite_ESP32 library and flash with the 16MB partition scheme. The feature adds ~115KB to the firmware binary.
+> **Disabled by default.** Enable it anytime via serial command or by setting `wakeWordEnabled = true` in code. No reflash needed.
 
 #### How it works
 
@@ -133,6 +133,7 @@ The firmware includes an **optional** continuous wake word engine that listens f
 
 | State | LED behavior |
 |---|---|
+| Wake word disabled | Red fade (same as muted) |
 | Listening for wake word | Subtle green pulse every ~2 seconds |
 | Wake word detected | White flash, then mic active (white) |
 | Muted | Wake word disabled, red fade |
@@ -145,36 +146,17 @@ The wake word task automatically pauses when:
 - 🔊 Audio is playing (I2S TX in use)
 - 🎤 Microphone is already active (user is speaking)
 
-#### Enabling microWakeWord
+#### Enabling / disabling
 
-1. **Install the TensorFlowLite_ESP32 library:**
-   ```bash
-   arduino-cli lib install "TensorFlowLite_ESP32"
-   ```
+**Via serial monitor** (115200 baud):
+```
+W          # toggle wake word on/off
+```
+The LED will pulse green when enabled, red when disabled.
 
-2. **Flash with the 16MB partition scheme** (already configured in `flash.sh`):
-   ```bash
-   ./flash.sh
-   ```
-   The FQBN now includes `FlashSize=16M,PartitionScheme=default_8MB` to accommodate the model.
+**Permanently enabled at boot:** change `wakeWordEnabled = false` to `true` in `onjuino/wake_word.h` and reflash.
 
-3. **Verify** in the serial monitor (115200 baud):
-   ```
-   [WW] Wake word task started on Core 1
-   [WW] Wake word engine initialized successfully
-   [WW] Entering listening loop...
-   ```
-
-4. **Test:** say "OK Nabu" — the LEDs should flash white and the mic opens for 20 seconds.
-
-#### Disabling microWakeWord
-
-To compile **without** the wake word engine (saving ~115KB flash and ~60KB PSRAM):
-
-1. Comment out or remove `#include "wake_word.h"` in `onjuino/onjuino.ino`
-2. Remove the `xTaskCreatePinnedToCore(wakeWordTask, ...)` line in `setup()`
-3. Remove the `wakeWordEnabled = ...` lines in the mute handler in `loop()`
-4. Flash with the original 4MB partition: change FQBN in `flash.sh` back to `FlashSize=4M,PartitionScheme=default`
+**Remove entirely** (save ~115KB flash + ~60KB PSRAM): comment out `#include "wake_word.h"` and the task creation in `onjuino/onjuino.ino`, then flash with `FlashSize=4M,PartitionScheme=default`.
 
 #### Files involved
 
@@ -334,7 +316,9 @@ Both firmware targets support serial commands at 115200 baud:
 | `m` | Disable mic |
 | `A` | Re-send multicast announcement |
 | `c` | Enter config mode (WiFi, server, volume) |
-| `W`/`w` | LED test fast/slow (onjuino) |
+| `W` | Toggle wake word on/off ("OK Nabu") |
+| `T` | LED test fast (onjuino) |
+| `w` | LED test slow (onjuino) |
 | `P` | Play 440Hz test tone (M5 Echo) |
 
 ## License
