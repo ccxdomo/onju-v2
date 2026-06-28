@@ -1,0 +1,3 @@
+[submodule "onjuino/lib/esp-micro-speech-features"]
+	path = onjuino/lib/esp-micro-speech-features
+	url = https://github.com/esphome-libs/esp-micro-speech-features.git

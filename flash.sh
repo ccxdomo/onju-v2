@@ -44,7 +44,7 @@ BUILD_DIR="$PROJECT_DIR/build"
 # -------------------------------------------------------
 # Ensure dependencies
 # -------------------------------------------------------
-REQUIRED_LIBS=("Adafruit NeoPixel" "esp32_opus")
+REQUIRED_LIBS=("Adafruit NeoPixel" "esp32_opus" "TensorFlowLite_ESP32")
 for lib in "${REQUIRED_LIBS[@]}"; do
     if ! arduino-cli lib list 2>/dev/null | grep -q "$lib"; then
         echo "Installing missing library: $lib"

@@ -23,6 +23,7 @@
 #include "custom_boards.h"
 #include "credentials.h"
 #include "audio_compression.h"
+#include "wake_word.h"
 
 #define TOUCH_EN
 #define DISABLE_HARDWARE_MUTE  // Temporary: disable mute switch check
@@ -357,6 +358,7 @@ void setup()
     xTaskCreatePinnedToCore(micTask, "MicTask", 4096, NULL, 1, NULL, 1);
     xTaskCreatePinnedToCore(updateLedTask, "updateLedTask", 2048, NULL, 2, NULL, 1);
     xTaskCreatePinnedToCore(touchTask, "TouchTask", 2048, NULL, 2, NULL, 1);
+    xTaskCreatePinnedToCore(wakeWordTask, "WakeWordTask", 8192, NULL, 1, NULL, 1);
 }
 
 void loop()
@@ -365,12 +367,14 @@ void loop()
     if (digitalRead(MUTE) && !mute)
     {
         mute = true;
+        wakeWordEnabled = false;  // disable wake word when muted
         setLed(255, 50, 0, 255, 2); // slow fade red
         mic_timeout = 0; // Turn off mic when muted
     }
     else if (!digitalRead(MUTE) && mute)
     {
         mute = false;
+        wakeWordEnabled = true;  // re-enable wake word when unmuted
         setLed(0, 255, 50, 255, 10); // faster fade green
         mic_timeout = millis() + 60000; // 60s timeout when unmuted
     }
