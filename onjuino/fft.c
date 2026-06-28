@@ -13,9 +13,9 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#include "fft.h"
+#include "microfrontend/fft.h"
 
-#include "kiss_fftr.h"
+#include "microfrontend/kiss_fftr.h"
 
 void FftCompute(struct FftState *state, const int16_t *input, int input_scale_shift) {
   const size_t input_size = state->input_size;

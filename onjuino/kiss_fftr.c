@@ -22,8 +22,8 @@ WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWIS
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "kiss_fftr.h"
-#include "_kiss_fft_guts.h"
+#include "microfrontend/kiss_fftr.h"
+#include "microfrontend/_kiss_fft_guts.h"
 
 struct kiss_fftr_state {
   kiss_fft_cfg substate;

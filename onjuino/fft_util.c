@@ -13,7 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#include "fft_util.h"
+#include "microfrontend/fft_util.h"
 
 #include <stdio.h>
 
@@ -21,7 +21,7 @@ limitations under the License.
 #include <esp_heap_caps.h>
 #endif
 
-#include "kiss_fftr.h"
+#include "microfrontend/kiss_fftr.h"
 
 int FftPopulateState(struct FftState *state, size_t input_size)
 {

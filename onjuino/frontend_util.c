@@ -12,12 +12,12 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#include "frontend_util.h"
+#include "microfrontend/frontend_util.h"
 
 #include <stdio.h>
 #include <string.h>
 
-#include "bits.h"
+#include "microfrontend/bits.h"
 
 void FrontendFillConfigWithDefaults(struct FrontendConfig *config) {
   WindowFillConfigWithDefaults(&config->window);

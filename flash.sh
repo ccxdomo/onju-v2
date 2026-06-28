@@ -11,7 +11,7 @@ shift 2>/dev/null || true
 
 case "$TARGET" in
     onjuino)
-        FQBN="esp32:esp32:esp32s3:CDCOnBoot=cdc,PSRAM=opi,UploadSpeed=115200"
+        FQBN="esp32:esp32:esp32s3:CDCOnBoot=cdc,PSRAM=opi,FlashMode=dio,FlashSize=16M,PartitionScheme=default_8MB,UploadSpeed=115200"
         PROJECT_DIR="$REPO/onjuino"
         INO_NAME="onjuino.ino"
         PORT_GLOBS=("/dev/cu.usbmodem*")
@@ -26,7 +26,7 @@ case "$TARGET" in
         # No target specified, treat as flag — default to onjuino
         set -- "$TARGET" "$@"
         TARGET="onjuino"
-        FQBN="esp32:esp32:esp32s3:CDCOnBoot=cdc,PSRAM=opi,UploadSpeed=115200"
+        FQBN="esp32:esp32:esp32s3:CDCOnBoot=cdc,PSRAM=opi,FlashMode=dio,FlashSize=16M,PartitionScheme=default_8MB,UploadSpeed=115200"
         PROJECT_DIR="$REPO/onjuino"
         INO_NAME="onjuino.ino"
         PORT_GLOBS=("/dev/cu.usbmodem*")

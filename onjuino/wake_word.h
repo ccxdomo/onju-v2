@@ -10,12 +10,19 @@
  *   - Runs as a FreeRTOS task on Core 1 (low priority)
  *   - Reads I2S microphone ONLY when micTask is inactive
  *     (mic_timeout expired AND no playback)
- *   - On detection: sets mic_timeout + LED feedback
+ *   - On detection: sets mic_timeout + LED feedback, stops I2S reading,
+ *     lets micTask take over
  *   - Respects mute switch (GPIO38)
  *
+ * I2S sharing:
+ *   - I2S0 is initialized once in setup() as TX+RX (MASTER, 16kHz, 32-bit, LEFT)
+ *   - wakeWordTask reads RX only when micTask is NOT reading
+ *   - On transition: i2s_zero_dma_buffer() to flush stale samples
+ *   - Guard conditions (mic_timeout, isPlaying, mute) ensure mutual exclusion
+ *
  * Dependencies:
- *   - TensorFlowLite_ESP32 (Arduino library)
- *   - esp-micro-speech-features (local lib/)
+ *   - TensorFlowLite_ESP32 (Arduino library, install via arduino-cli)
+ *   - esp-micro-speech-features (vendored in microfrontend/)
  *   - okay_nabu_model.h (generated from okay_nabu.tflite)
  */
 
@@ -62,17 +69,12 @@
 // ============================================================
 // External globals (defined in onjuino.ino)
 // ============================================================
-extern i2s_config_t i2s_config;
-extern i2s_pin_config_t pin_config;
-extern volatile uint32_t mic_timeout;
+extern uint32_t mic_timeout;
 extern volatile bool isPlaying;
 extern volatile bool deviceEnabled;
-extern volatile uint8_t ledColor[3];
-extern volatile uint16_t ledLevel;
-extern volatile uint8_t ledFade;
 extern const unsigned long MIC_LISTEN_MS;
 
-// Mute pin
+// Mute pin (GPIO38, INPUT_PULLUP — LOW = unmuted, HIGH = muted)
 #define MUTE_PIN 38
 
 // ============================================================
@@ -114,6 +116,11 @@ static int32_t ww_mic_buffer[WW_CHUNK_SAMPLES];
 static int16_t ww_audio_buffer[WW_CHUNK_SAMPLES];
 
 // ============================================================
+// Track whether we're currently reading I2S
+// ============================================================
+static volatile bool ww_i2s_active = false;
+
+// ============================================================
 // Helper: set LED (delegates to onjuino.ino's setLed)
 // ============================================================
 extern void setLed(uint8_t r, uint8_t g, uint8_t b, uint8_t level, uint8_t fade);
@@ -123,14 +130,16 @@ extern void setLed(uint8_t r, uint8_t g, uint8_t b, uint8_t level, uint8_t fade)
 // Returns true on success
 // ============================================================
 static bool wakeWordInit() {
+    Serial.println("[WW] Initializing wake word engine...");
+
     // --- Allocate variable arena for resource variables ---
-    // TFLite Micro needs a separate arena for resource variables
     #define WW_VAR_ARENA_SIZE 1024
     ww_var_arena = (uint8_t *)heap_caps_malloc(WW_VAR_ARENA_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!ww_var_arena) {
-        Serial.println("[WW] ERROR: Failed to allocate variable arena");
+        Serial.println("[WW] ERROR: Failed to allocate variable arena (PSRAM)");
         return false;
     }
+    Serial.printf("[WW] Variable arena: %d bytes @ %p\n", WW_VAR_ARENA_SIZE, ww_var_arena);
 
     ww_ma = tflite::MicroAllocator::Create(ww_var_arena, WW_VAR_ARENA_SIZE);
     ww_mrv = tflite::MicroResourceVariables::Create(ww_ma, 20);
@@ -138,11 +147,13 @@ static bool wakeWordInit() {
     // --- Allocate tensor arena ---
     ww_tensor_arena = (uint8_t *)heap_caps_malloc(WW_TENSOR_ARENA_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!ww_tensor_arena) {
-        Serial.println("[WW] ERROR: Failed to allocate tensor arena");
+        Serial.println("[WW] ERROR: Failed to allocate tensor arena (PSRAM)");
         return false;
     }
+    Serial.printf("[WW] Tensor arena: %d bytes @ %p\n", WW_TENSOR_ARENA_SIZE, ww_tensor_arena);
 
     // --- Register ops ---
+    Serial.println("[WW] Registering TFLite ops...");
     ww_op_resolver = new tflite::MicroMutableOpResolver<20>();
     ww_op_resolver->AddCallOnce();
     ww_op_resolver->AddVarHandle();
@@ -166,6 +177,7 @@ static bool wakeWordInit() {
     ww_op_resolver->AddSplitV();
 
     // --- Load model ---
+    Serial.println("[WW] Loading model...");
     const tflite::Model *model = tflite::GetModel(okay_nabu_model);
     if (model->version() != TFLITE_SCHEMA_VERSION) {
         Serial.printf("[WW] ERROR: Model schema version mismatch (got %d, expected %d)\n",
@@ -186,17 +198,21 @@ static bool wakeWordInit() {
     TfLiteTensor *input = ww_interpreter->input(0);
     if (input->dims->size != 3 || input->dims->data[0] != 1 ||
         input->dims->data[2] != PREPROCESSOR_FEATURE_SIZE) {
-        Serial.println("[WW] ERROR: Unexpected input dimensions");
+        Serial.printf("[WW] ERROR: Unexpected input dimensions (size=%d, [%d,%d,%d])\n",
+                      input->dims->size, input->dims->data[0],
+                      input->dims->size > 1 ? input->dims->data[1] : 0,
+                      input->dims->size > 2 ? input->dims->data[2] : 0);
         return false;
     }
     ww_model_stride = input->dims->data[1];
-    Serial.printf("[WW] Model input: [1, %d, %d]\n", ww_model_stride, PREPROCESSOR_FEATURE_SIZE);
+    Serial.printf("[WW] Model input: [1, %d, %d] (int8)\n", ww_model_stride, PREPROCESSOR_FEATURE_SIZE);
 
     TfLiteTensor *output = ww_interpreter->output(0);
     Serial.printf("[WW] Model output: [%d, %d], type=%d\n",
                   output->dims->data[0], output->dims->data[1], output->type);
 
     // --- Initialize audio frontend ---
+    Serial.println("[WW] Initializing audio frontend...");
     FrontendFillConfigWithDefaults(&ww_frontend_config);
     ww_frontend_config.window.size_ms = FEATURE_DURATION_MS;
     ww_frontend_config.window.step_size_ms = FEATURE_STEP_SIZE_MS;
@@ -262,9 +278,9 @@ static bool wakeWordProcessChunk(const int16_t *samples, size_t sample_count) {
         int8_t features[PREPROCESSOR_FEATURE_SIZE];
         for (size_t i = 0; i < PREPROCESSOR_FEATURE_SIZE; i++) {
             // The frontend outputs 16-bit values; quantize to int8
-            // (same as ESPHome: right-shift by log_scale.scale_shift = 6)
+            // (same as ESPHome: subtract 128 then right-shift by log_scale.scale_shift = 6)
             int32_t val = (int32_t)frontend_out.values[i] - 128;
-            val = val >> 6;  // log_scale.scale_shift
+            val = val >> 6;
             if (val > 127) val = 127;
             if (val < -128) val = -128;
             features[i] = (int8_t)val;
@@ -312,8 +328,8 @@ static bool wakeWordProcessChunk(const int16_t *samples, size_t sample_count) {
 
             if (sum > threshold) {
                 // Wake word detected!
-                Serial.printf("[WW] WAKE WORD DETECTED! avg_prob=%d/%d\n",
-                              (int)(sum / WW_SLIDING_WINDOW_SIZE), quantized_cutoff);
+                Serial.printf("[WW] >>> WAKE WORD DETECTED! avg_prob=%d/%d (threshold=%d) <<<\n",
+                              (int)(sum / WW_SLIDING_WINDOW_SIZE), quantized_cutoff, (int)threshold);
 
                 // Reset to avoid duplicate detections
                 memset(ww_recent_probs, 0, sizeof(ww_recent_probs));
@@ -322,7 +338,8 @@ static bool wakeWordProcessChunk(const int16_t *samples, size_t sample_count) {
             }
         }
 
-        // Cooldown tracking
+        // Cooldown tracking: if current probability is below cutoff, advance cooldown
+        uint8_t quantized_cutoff = (uint8_t)(WW_PROBABILITY_CUTOFF * 255.0f);
         if (ww_recent_probs[ww_prob_index] < quantized_cutoff) {
             ww_ignore_windows = (ww_ignore_windows < 0) ? ww_ignore_windows + 1 : 1;
             if (ww_ignore_windows > 0) ww_ignore_windows = 0;
@@ -333,8 +350,8 @@ static bool wakeWordProcessChunk(const int16_t *samples, size_t sample_count) {
 }
 
 // ============================================================
-// Read a chunk of audio from I2S
-// Returns number of samples read (0 on error)
+// Read a chunk of audio from I2S (RX only, 32-bit → 16-bit)
+// Returns number of samples read (0 on error/timeout)
 // ============================================================
 static size_t wakeWordReadI2S(int16_t *buffer, size_t max_samples) {
     size_t bytes_to_read = max_samples * sizeof(int32_t);
@@ -347,7 +364,7 @@ static size_t wakeWordReadI2S(int16_t *buffer, size_t max_samples) {
 
     size_t samples_read = bytes_read / sizeof(int32_t);
 
-    // Convert 32-bit I2S samples to 16-bit (take upper 16 bits)
+    // Convert 32-bit I2S samples to 16-bit (take upper 16 bits, same as micTask)
     for (size_t i = 0; i < samples_read; i++) {
         buffer[i] = (int16_t)(ww_mic_buffer[i] >> 14);
     }
@@ -356,12 +373,19 @@ static size_t wakeWordReadI2S(int16_t *buffer, size_t max_samples) {
 }
 
 // ============================================================
-// wakeWordTask — FreeRTOS task, runs on Core 1
+// wakeWordTask — FreeRTOS task, runs on Core 1, priority 1
+//
+// Lifecycle:
+//   1. Init TFLite model + frontend (one-time, at boot)
+//   2. Loop: check guard conditions → read I2S → process → detect
+//   3. On detection: set mic_timeout, flash LED, stop reading I2S
+//   4. micTask takes over I2S RX for UDP streaming
+//   5. When mic_timeout expires, wakeWordTask resumes I2S reading
 // ============================================================
 void wakeWordTask(void *pvParameters) {
     Serial.println("[WW] Wake word task started on Core " + String(xPortGetCoreID()));
 
-    // Initialize the wake word engine
+    // Initialize the wake word engine (model + frontend, one-time)
     if (!wakeWordInit()) {
         Serial.println("[WW] FATAL: Failed to initialize wake word engine. Task exiting.");
         vTaskDelete(NULL);
@@ -374,29 +398,51 @@ void wakeWordTask(void *pvParameters) {
     // LED heartbeat counter for subtle "listening" indication
     uint32_t led_heartbeat = 0;
 
+    // Track previous active state to detect transitions
+    bool was_active = false;
+
+    Serial.println("[WW] Entering listening loop...");
+
     while (1) {
         vTaskDelayUntil(&xLastWakeTime, xPeriod);
 
-        // --- Guard conditions: don't run if... ---
+        // --- Guard conditions: check if we should be listening ---
+        bool should_listen = true;
+
         if (!wakeWordEnabled) {
-            continue;  // disabled by mute or user
+            should_listen = false;  // disabled by mute or user
+        } else if (!deviceEnabled) {
+            should_listen = false;  // device disabled by double-tap
+        } else if (isPlaying) {
+            should_listen = false;  // audio playback active — I2S TX in use
+        } else if (mic_timeout > millis()) {
+            should_listen = false;  // micTask is active (user is speaking)
+        } else if (digitalRead(MUTE_PIN) == HIGH) {
+            should_listen = false;  // hardware mute switch active
         }
 
-        if (!deviceEnabled) {
-            continue;  // device disabled by double-tap
+        // --- Handle transitions ---
+        if (should_listen && !was_active) {
+            // Transition: idle → listening
+            Serial.println("[WW] Starting I2S listening...");
+            i2s_zero_dma_buffer(I2S_NUM_0);  // flush stale samples
+            ww_i2s_active = true;
+            was_active = true;
+            // Reset frontend state for clean start
+            FrontendReset(&ww_frontend_state);
+            memset(ww_recent_probs, 0, sizeof(ww_recent_probs));
+            ww_ignore_windows = -WW_MIN_SLICES_BEFORE_DETECTION;
+            ww_current_stride = 0;
+        } else if (!should_listen && was_active) {
+            // Transition: listening → idle
+            Serial.println("[WW] Stopping I2S listening (mic active or disabled)");
+            i2s_zero_dma_buffer(I2S_NUM_0);  // flush before handing over
+            ww_i2s_active = false;
+            was_active = false;
         }
 
-        if (isPlaying) {
-            continue;  // audio playback active
-        }
-
-        if (mic_timeout > millis()) {
-            continue;  // micTask is active (user is speaking)
-        }
-
-        // Check mute switch (active low with pullup)
-        if (digitalRead(MUTE_PIN) == HIGH) {
-            continue;  // muted
+        if (!should_listen) {
+            continue;  // nothing to do this cycle
         }
 
         // --- Subtle LED heartbeat while listening for wake word ---
@@ -408,13 +454,21 @@ void wakeWordTask(void *pvParameters) {
         // --- Read audio from I2S ---
         size_t samples_read = wakeWordReadI2S(ww_audio_buffer, WW_CHUNK_SAMPLES);
         if (samples_read == 0) {
-            continue;  // no data available
+            continue;  // no data available (timeout or DMA empty)
         }
 
         // --- Process through wake word pipeline ---
         if (wakeWordProcessChunk(ww_audio_buffer, samples_read)) {
-            // Wake word detected!
+            // ============================================================
+            // WAKE WORD DETECTED!
+            // ============================================================
             wakeWordDetected = true;
+
+            // Stop I2S reading — micTask will take over
+            Serial.println("[WW] Flushing I2S DMA, handing over to micTask...");
+            i2s_zero_dma_buffer(I2S_NUM_0);
+            ww_i2s_active = false;
+            was_active = false;
 
             // Trigger mic listening (same as center tap)
             mic_timeout = millis() + MIC_LISTEN_MS;
@@ -422,7 +476,7 @@ void wakeWordTask(void *pvParameters) {
             // LED feedback: white flash
             setLed(255, 255, 255, 120, 8);
 
-            Serial.println("[WW] Mic activated for " + String(MIC_LISTEN_MS / 1000) + "s");
+            Serial.printf("[WW] Mic activated for %lu seconds\n", MIC_LISTEN_MS / 1000);
         }
     }
 }
